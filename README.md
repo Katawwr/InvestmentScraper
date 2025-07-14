@@ -5,6 +5,20 @@ It calculates DCF, CAPM, Sharpe ratio, and a composite investment score for a li
 
 ---
 
+## ⚠️ DISCLAIMER
+
+**THIS SOFTWARE IS FOR EDUCATIONAL AND RESEARCH PURPOSES ONLY.**
+
+- **NOT FINANCIAL ADVICE:** This tool does not provide financial, investment, or trading advice.
+- **DO YOUR OWN RESEARCH:** All investment decisions should be based on your own research and risk tolerance.
+- **CONSULT PROFESSIONALS:** Always consult with qualified financial advisors before making investment decisions.
+- **NO WARRANTIES:** The calculations and scores are simplified models and may not reflect real market conditions.
+- **USE AT YOUR OWN RISK:** The authors are not responsible for any financial losses resulting from the use of this software.
+
+**Past performance does not guarantee future results. All investments carry risk of loss.**
+
+---
+
 ## Features
 
 - **Reads tickers from `tickers.csv`** (one per line, header: `ticker`)
@@ -68,21 +82,6 @@ investment_score = (
   - Add your normalization logic for the new metric.
   - Add it to the weighted sum.
   - Adjust the weights accordingly.
-
----
-
-## Notes & Tips
-
-- **Ticker symbols must match Yahoo Finance.**  
-  Some international or special tickers may not be supported.
-- **Missing data:**  
-  If a stock is missing key data, its score and rating will show as `N/A`.
-- **Error 404:**  
-  This means Yahoo Finance could not find the ticker. Check for typos or delisted stocks.
-- **Customize further:**  
-  You can add more metrics (e.g., P/E, PEG, FCF margin) or filters (e.g., minimum market cap) as desired.
-- **For best results:**  
-  Use a mix of value, growth, and risk metrics, and test your weights on historical data.
 
 ---
 
