@@ -3,35 +3,45 @@ from colorama import init, Fore, Style
 from tabulate import tabulate
 import sqlite3
 import csv
+import yfinance as yf
+import numpy as np
 
 # Initialize colorama for cross-platform color support
 init(autoreset=True)
 
 def get_color_for_score(score):
     """Return color based on investment score"""
-    if score >= 80:
-        return Fore.GREEN + Style.BRIGHT
-    elif score >= 65:
-        return Fore.GREEN
-    elif score >= 50:
-        return Fore.YELLOW
-    elif score >= 35:
-        return Fore.RED
+    if isinstance(score, (int, float)):
+        if score >= 80:
+            return Fore.GREEN + Style.BRIGHT
+        elif score >= 65:
+            return Fore.GREEN
+        elif score >= 50:
+            return Fore.YELLOW
+        elif score >= 35:
+            return Fore.RED
+        else:
+            return Fore.RED + Style.BRIGHT
     else:
-        return Fore.RED + Style.BRIGHT
+        return Fore.WHITE  # Default color for N/A or non-numeric
 
 def get_value_color(value, is_percentage=False):
     """Return color for positive/negative values"""
-    if value > 0:
-        return Fore.GREEN
-    elif value < 0:
-        return Fore.RED
+    if isinstance(value, (int, float)):
+        if value > 0:
+            return Fore.GREEN
+        elif value < 0:
+            return Fore.RED
+        else:
+            return Fore.WHITE
     else:
-        return Fore.WHITE
+        return Fore.WHITE  # Default color for N/A or non-numeric
 
 def format_number(value, format_type='general'):
     """Format numbers for display"""
-    if pd.isna(value) or value == 'MISSING':
+    if pd.isna(value) or value == 'MISSING' or value == 'N/A':
+        return 'N/A'
+    if not isinstance(value, (int, float)):
         return 'N/A'
     if format_type == 'currency':
         if abs(value) >= 1e9:
@@ -74,9 +84,10 @@ def display_analysis_results(db_path='financial_analysis.db'):
     '''
     df = pd.read_sql_query(query, conn)
     conn.close()
-    if df.empty:
-        print("No analysis data found. Run analysis first.")
-        return
+
+    # Convert 'N/A' to np.nan for numeric columns
+    for col in ['investment_score', 'sharpe_ratio', 'beta']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
     display_data = []
     for _, row in df.iterrows():
         score_color = get_color_for_score(row['investment_score'])
@@ -94,7 +105,7 @@ def display_analysis_results(db_path='financial_analysis.db'):
             format_number(row['sharpe_ratio']),
             f"{score_color}{format_number(row['investment_score'], 'score')}{Style.RESET_ALL}",
             f"{score_color}{row['score_category']}{Style.RESET_ALL}",
-            f"{value_color}{row['undervalued_percent']:.1f}%{Style.RESET_ALL}"
+            f"{value_color}{row['undervalued_percent'] if row['undervalued_percent'] != 'N/A' else 'N/A'}{Style.RESET_ALL}"
         ]
         display_data.append(formatted_row)
     headers = [
@@ -169,6 +180,10 @@ def ensure_tables_exist(db_path='financial_analysis.db'):
     conn.close()
 
 def insert_tickers_from_csv(csv_path='tickers.csv', db_path='financial_analysis.db'):
+    """
+    Reads tickers from a CSV file, fetches financial data using yfinance,
+    calculates analysis metrics, and inserts results into the database.
+    """
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     with open(csv_path, newline='') as csvfile:
@@ -176,12 +191,104 @@ def insert_tickers_from_csv(csv_path='tickers.csv', db_path='financial_analysis.
         for row in reader:
             ticker = row.get('ticker') or row.get('Ticker') or row.get('TICKER')
             if not ticker:
-                continue  # skip rows without a ticker
-            # Insert with placeholder/demo values for other columns
-            c.execute("INSERT OR IGNORE INTO stock_data VALUES (?, ?, ?, ?, ?, ?)",
-                      (ticker, 10.0, 100000000, 0.1, 1.0, 20.0))
-            c.execute("INSERT OR IGNORE INTO stock_analysis VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                      (ticker, 12.0, 11.0, 0.08, 1.05, 60.0, 'HOLD', 10.0))
+                continue
+            try:
+                yf_ticker = yf.Ticker(ticker)
+                info = yf_ticker.info
+
+                def safe_get(info, key):
+                    val = info.get(key)
+                    return val if val is not None else 'N/A'
+
+                price = safe_get(info, 'currentPrice')
+                market_cap = safe_get(info, 'marketCap')
+                revenue_growth = safe_get(info, 'revenueGrowth')
+                beta = safe_get(info, 'beta')
+                pe_ratio = safe_get(info, 'trailingPE')
+                free_cash_flow = safe_get(info, 'freeCashflow')
+                dividends = safe_get(info, 'dividendRate')
+            except Exception:
+                price, market_cap, revenue_growth, beta, pe_ratio = 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'
+                free_cash_flow, dividends = 'N/A', 'N/A'
+
+            # Insert/update stock_data table
+            c.execute("INSERT OR REPLACE INTO stock_data VALUES (?, ?, ?, ?, ?, ?)",
+                      (ticker, price, market_cap, revenue_growth, beta, pe_ratio))
+
+            # --- Calculations ---
+            # DCF Value: Discounted 5-year free cash flow at 10%
+            dcf_value = free_cash_flow / ((1 + 0.1) ** 5) if isinstance(free_cash_flow, (int, float)) and free_cash_flow != 0 else 'N/A'
+
+            # Graham (Gordon Growth) Value: Dividends / (0.1 - revenue_growth)
+            if (isinstance(dividends, (int, float)) and dividends != 0 and
+                isinstance(revenue_growth, (int, float)) and revenue_growth < 0.1 and revenue_growth > -10):
+                try:
+                    graham_value = dividends / (0.1 - revenue_growth)
+                except ZeroDivisionError:
+                    graham_value = 'N/A'
+            else:
+                graham_value = 'N/A'
+
+            # Future Value: market_cap * (1 + revenue_growth)^5
+            if (isinstance(market_cap, (int, float)) and market_cap > 0 and
+                isinstance(revenue_growth, (int, float)) and revenue_growth > -1):
+                try:
+                    future_value = market_cap * ((1 + revenue_growth) ** 5)
+                except Exception:
+                    future_value = 'N/A'
+            else:
+                future_value = 'N/A'
+
+            # CAPM: 0.04 + beta * (0.1 - 0.04)
+            capm_return = 0.04 + beta * (0.1 - 0.04) if isinstance(beta, (int, float)) and beta != 0 else 'N/A'
+
+            # Sharpe Ratio: (capm_return - 0.04) / 0.2
+            sharpe_ratio = (capm_return - 0.04) / 0.2 if isinstance(capm_return, (int, float)) else 'N/A'
+
+            # Undervalued percent: (DCF - Price) / Price * 100
+            if (isinstance(price, (int, float)) and price > 0 and
+                isinstance(dcf_value, (int, float))):
+                undervalued_percent = ((dcf_value - price) / price * 100)
+            else:
+                undervalued_percent = 'N/A'
+
+            # --- Composite Investment Score Calculation ---
+            # Normalize metrics to 0-100, skip N/A
+            norm_sharpe = min(max((sharpe_ratio / 2) * 100, 0), 100) if isinstance(sharpe_ratio, (int, float)) else 0
+            norm_growth = min(max(((revenue_growth + 0.2) / 0.7) * 100, 0), 100) if isinstance(revenue_growth, (int, float)) else 0
+            norm_underval = min(max((undervalued_percent + 50) / 1, 0), 100) if isinstance(undervalued_percent, (int, float)) else 0
+            norm_capm = min(max((capm_return - 0.04) / 0.16 * 100, 0), 100) if isinstance(capm_return, (int, float)) else 0
+
+            # Composite score with weights
+            if all(isinstance(x, (int, float)) for x in [norm_sharpe, norm_growth, norm_underval, norm_capm]) and norm_sharpe > 0:
+                investment_score = (
+                    0.4 * norm_sharpe +
+                    0.2 * norm_growth +
+                    0.2 * norm_underval +
+                    0.2 * norm_capm
+                )
+                investment_score = min(max(investment_score, 0), 100)
+            else:
+                investment_score = 'N/A'
+
+            # Score category logic
+            if not isinstance(investment_score, (int, float)):
+                score_category = 'N/A'
+            elif investment_score >= 80:
+                score_category = 'STRONG BUY'
+            elif investment_score >= 65:
+                score_category = 'BUY'
+            elif investment_score >= 50:
+                score_category = 'HOLD'
+            elif investment_score >= 35:
+                score_category = 'SELL'
+            else:
+                score_category = 'STRONG SELL'
+
+            # Insert/update stock_analysis table
+            c.execute(
+                "INSERT OR REPLACE INTO stock_analysis VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (ticker, dcf_value, graham_value, capm_return, sharpe_ratio, investment_score, score_category, undervalued_percent))
     conn.commit()
     conn.close()
 
